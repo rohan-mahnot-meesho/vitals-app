@@ -31,10 +31,12 @@ body{background:var(--paper); color:var(--ink); font-family:'Inter',-apple-syste
 .drop:hover,.drop.over{border-color:var(--clay);background:#FFF}
 .drop .big{font-size:16px;font-weight:500;color:var(--ink)}
 .drop .small{color:var(--mut);font-size:13px;margin-top:8px}
-.privacy{margin-top:24px;color:var(--ink2);font-size:12.5px;max-width:500px;display:flex;gap:8px;justify-content:center}
-.privacy b{color:var(--ink)}
-.how{margin-top:16px;font-size:12.5px;color:var(--mut);max-width:540px}
-.how summary{cursor:pointer;color:var(--clay)}
+.info{width:min(540px,94vw);margin-top:26px;text-align:left}
+.privacy{color:var(--ink2);font-size:13px;line-height:1.55;margin:0 0 14px}
+.privacy b{color:var(--ink);font-weight:500}
+.how summary{cursor:pointer;color:var(--clay);font-size:13px}
+#howBody{margin:12px 0 0;padding-left:20px;color:var(--ink2);font-size:13px;line-height:1.75}
+#howBody li{margin-bottom:5px}
 .err{margin-top:16px;color:var(--elev-ink);font-size:13.5px;min-height:18px;max-width:500px}
 .spin{margin-top:22px;color:var(--ink2);font-size:14px}
 .srcpick{display:flex;gap:12px;margin-top:24px;flex-wrap:wrap;justify-content:center}
@@ -104,7 +106,7 @@ td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
 
 <div id="uploadView">
   <div class="logo">Vitals</div>
-  <div class="tag">Turn your fitness export into a calm, complete view of your health — heart, sleep, training, and how they move together.</div>
+  <div class="tag">Turn years of your own data into a clear read on your health — what's working, and what to change.</div>
   <div class="srcpick" id="srcpick">
     <button class="srccard active" data-src="garmin"><i class="ti ti-activity-heartbeat" aria-hidden="true"></i><span><span class="n">Garmin</span><br><span class="d">Connect “Export Your Data” .zip</span></span></button>
     <button class="srccard" data-src="apple"><i class="ti ti-heart" aria-hidden="true"></i><span><span class="n">Apple Health</span><br><span class="d">export.zip or export.xml</span></span></button>
@@ -118,10 +120,12 @@ td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
   </div>
   <div class="err" id="err"></div>
   <div class="spin hidden" id="spin">Reading your export…</div>
-  <div class="privacy"><i class="lock">🔒</i><span><b>Your data never leaves your device.</b> Everything is parsed and charted locally in your browser.</span></div>
-  <details class="how"><summary>How do I export my data?</summary>
-    <div id="howBody" style="margin-top:10px;text-align:left"></div>
-  </details>
+  <div class="info">
+    <p class="privacy"><b>Private by design.</b> Your file is read and analysed entirely in your browser — nothing is uploaded, stored, or sent anywhere.</p>
+    <details class="how"><summary id="howSummary">How do I export my data?</summary>
+      <ol id="howBody"></ol>
+    </details>
+  </div>
 </div>
 
 <div id="dashView" class="hidden">
@@ -377,15 +381,33 @@ function reset(){ $('dashView').classList.add('hidden'); $('uploadView').classLi
 $('again').onclick=reset; $('again2').onclick=reset;
 
 const SRC={
-  garmin:{ext:'.zip', big:'Drop your Garmin export .zip here', how:'Sign in at garmin.com/account → Export Your Data. Garmin emails a download link within a few days. Upload the .zip here as-is.'},
-  apple:{ext:'.zip,.xml', big:'Drop your Apple Health export here', how:'On your iPhone: open Health → tap your photo (top-right) → Export All Health Data. AirDrop or email the export.zip to this computer, then upload it here (or the export.xml inside it). Large exports may take a moment to parse.'},
-  fitbit:{ext:'.zip', big:'Drop your Fitbit (Google Takeout) .zip here', how:'Go to takeout.google.com → Deselect all → tick “Fitbit” → export as a .zip. Download it and upload the .zip here.'},
-  coros:{ext:'.zip,.tcx', big:'Drop your COROS export here', how:'In COROS Training Hub (web) → Activity List → Export Data → choose TCX. You’ll be emailed the files — upload the .zip (or a single .tcx). Note: COROS exports workouts only, so sleep and resting heart rate won’t appear.'}
+  garmin:{ext:'.zip', label:'Garmin', big:'Drop your Garmin export .zip here', steps:[
+    'Sign in at garmin.com/account on a computer.',
+    'Open the Account Management Center and choose “Export Your Data”.',
+    'Garmin emails a download link (usually within a few days) — download the .zip.',
+    'Upload that .zip here, as-is (don’t unzip it).']},
+  apple:{ext:'.zip,.xml', label:'Apple Health', big:'Drop your Apple Health export here', steps:[
+    'On your iPhone, open Apple Health and tap your profile picture (top-right).',
+    'Scroll to the bottom and tap “Export All Health Data”.',
+    'Save the .zip to Files, keeping it as-is (don’t unzip it).',
+    'Upload that .zip here.']},
+  fitbit:{ext:'.zip', label:'Fitbit', big:'Drop your Fitbit (Google Takeout) .zip here', steps:[
+    'Go to takeout.google.com and sign in with your Fitbit (Google) account.',
+    'Click “Deselect all”, then tick only “Fitbit”.',
+    'Create the export and download the .zip when the email arrives.',
+    'Upload that .zip here.']},
+  coros:{ext:'.zip,.tcx', label:'COROS', big:'Drop your COROS export here', steps:[
+    'Open COROS Training Hub on a computer (t.coros.com).',
+    'Go to the Activity List and click “Export Data”.',
+    'Choose the TCX format — the files are emailed to you.',
+    'Upload that .zip (or a single .tcx) here. COROS exports workouts only.']}
 };
 let curSource='garmin';
 function setSource(s){ curSource=s; const c=SRC[s];
   document.querySelectorAll('.srccard').forEach(b=>b.classList.toggle('active',b.dataset.src===s));
-  $('dropBig').textContent=c.big; $('howBody').textContent=c.how; file.setAttribute('accept',c.ext); $('err').textContent=''; }
+  $('dropBig').textContent=c.big; file.setAttribute('accept',c.ext); $('err').textContent='';
+  const hs=$('howSummary'); if(hs) hs.textContent='How do I export my '+c.label+' data?';
+  const hb=$('howBody'); if(hb) hb.innerHTML=c.steps.map(x=>`<li>${x}</li>`).join(''); }
 document.querySelectorAll('.srccard').forEach(b=>b.onclick=()=>setSource(b.dataset.src));
 setSource('garmin');
 
