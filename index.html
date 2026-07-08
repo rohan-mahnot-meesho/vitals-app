@@ -37,6 +37,15 @@ body{background:var(--paper); color:var(--ink); font-family:'Inter',-apple-syste
 .how summary{cursor:pointer;color:var(--clay)}
 .err{margin-top:16px;color:var(--elev-ink);font-size:13.5px;min-height:18px;max-width:500px}
 .spin{margin-top:22px;color:var(--ink2);font-size:14px}
+.srcpick{display:flex;gap:12px;margin-top:24px;flex-wrap:wrap;justify-content:center}
+.srccard{display:flex;align-items:center;gap:11px;text-align:left;background:var(--card);border:.5px solid var(--line);border-radius:12px;padding:13px 16px;cursor:pointer;font-family:inherit;min-width:212px}
+.srccard:hover{border-color:var(--line2)}
+.srccard.active{border:1.5px solid var(--clay);background:var(--clay-bg)}
+.srccard i{font-size:22px;color:var(--ink2)}
+.srccard.active i{color:var(--clay-ink)}
+.srccard .n{font-size:14px;font-weight:500;color:var(--ink)}
+.srccard .d{font-size:11.5px;color:var(--mut)}
+.srccard.active .d{color:var(--clay-ink)}
 
 /* console shell */
 #dashView{display:grid;grid-template-columns:186px 1fr;min-height:100vh}
@@ -95,17 +104,21 @@ td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
 
 <div id="uploadView">
   <div class="logo">Vitals</div>
-  <div class="tag">Turn your Garmin data export into a calm, complete view of your health — heart, sleep, training, and how they move together.</div>
+  <div class="tag">Turn your fitness export into a calm, complete view of your health — heart, sleep, training, and how they move together.</div>
+  <div class="srcpick" id="srcpick">
+    <button class="srccard active" data-src="garmin"><i class="ti ti-activity-heartbeat" aria-hidden="true"></i><span><span class="n">Garmin</span><br><span class="d">Connect “Export Your Data” .zip</span></span></button>
+    <button class="srccard" data-src="apple"><i class="ti ti-heart" aria-hidden="true"></i><span><span class="n">Apple Health</span><br><span class="d">export.zip or export.xml</span></span></button>
+  </div>
   <div class="drop" id="drop">
-    <div class="big">Drop your Garmin export .zip here</div>
-    <div class="small">or click to choose a file</div>
+    <div class="big" id="dropBig">Drop your Garmin export .zip here</div>
+    <div class="small" id="dropSmall">or click to choose a file</div>
     <input type="file" id="file" accept=".zip" style="display:none"/>
   </div>
   <div class="err" id="err"></div>
   <div class="spin hidden" id="spin">Reading your export…</div>
   <div class="privacy"><i class="lock">🔒</i><span><b>Your data never leaves your device.</b> Everything is parsed and charted locally in your browser.</span></div>
-  <details class="how"><summary>How do I get my Garmin export?</summary>
-    <div style="margin-top:10px;text-align:left">Sign in at garmin.com/account → Export Your Data. Garmin emails a download link within a few days. Upload the .zip here as-is.</div>
+  <details class="how"><summary>How do I export my data?</summary>
+    <div id="howBody" style="margin-top:10px;text-align:left"></div>
   </details>
 </div>
 
@@ -361,6 +374,17 @@ drop.addEventListener('drop',e=>{const f=e.dataTransfer.files[0]; if(f) handle(f
 function reset(){ $('dashView').classList.add('hidden'); $('uploadView').classList.remove('hidden'); $('err').textContent=''; file.value=''; charts.forEach(c=>c.destroy()); charts=[]; }
 $('again').onclick=reset; $('again2').onclick=reset;
 
+const SRC={
+  garmin:{ext:'.zip', big:'Drop your Garmin export .zip here', how:'Sign in at garmin.com/account → Export Your Data. Garmin emails a download link within a few days. Upload the .zip here as-is.'},
+  apple:{ext:'.zip,.xml', big:'Drop your Apple Health export here', how:'On your iPhone: open Health → tap your photo (top-right) → Export All Health Data. AirDrop or email the export.zip to this computer, then upload it here (or the export.xml inside it). Large exports may take a moment to parse.'}
+};
+let curSource='garmin';
+function setSource(s){ curSource=s; const c=SRC[s];
+  document.querySelectorAll('.srccard').forEach(b=>b.classList.toggle('active',b.dataset.src===s));
+  $('dropBig').textContent=c.big; $('howBody').textContent=c.how; file.setAttribute('accept',c.ext); $('err').textContent=''; }
+document.querySelectorAll('.srccard').forEach(b=>b.onclick=()=>setSource(b.dataset.src));
+setSource('garmin');
+
 const WANT=['UDSFile','sleepData','summarizedActivities','MetricsMaxMetData'];
 async function collect(zip, depth, diag){
   const out=[], inner=[], tasks=[];
@@ -380,19 +404,78 @@ async function collect(zip, depth, diag){
 async function handle(f){
   $('err').textContent=''; $('spin').classList.remove('hidden'); $('spin').textContent='Reading your export…';
   try{
-    if(!f.name.toLowerCase().endsWith('.zip')) throw new Error('That doesn’t look like a .zip. Upload the .zip archive from Garmin’s “Export Your Data”.');
-    let zip; try{ zip=await JSZip.loadAsync(f); }catch(_){ throw new Error('This file couldn’t be opened as a zip — it may still be downloading or be corrupted. Try re-downloading the export from Garmin.'); }
-    const diag={json:0,zip:0,top:new Set()};
-    const files=await collect(zip,0,diag);
-    if(!files.length){
-      const tops=[...diag.top].slice(0,10).join(', ')||'(none)';
-      throw new Error('No Garmin health files found. This zip had '+diag.json+' JSON and '+diag.zip+' nested zip file(s). Top-level items: '+tops+'. The app needs the full “Export Your Data” archive, which contains a DI_CONNECT folder with your wellness data.');
-    }
-    $('spin').textContent='Parsing '+files.length+' data files…';
-    render(GarminCompute.parseExport(files));
+    const payload = curSource==='apple' ? await handleApple(f) : await handleGarmin(f);
+    render(payload);
     $('spin').classList.add('hidden'); $('spin').textContent='Reading your export…';
     $('uploadView').classList.add('hidden'); $('dashView').classList.remove('hidden'); window.scrollTo(0,0);
   }catch(err){ $('spin').classList.add('hidden'); $('err').textContent=err.message||String(err); }
+}
+async function handleGarmin(f){
+  if(!f.name.toLowerCase().endsWith('.zip')) throw new Error('That doesn’t look like a .zip. Upload the .zip archive from Garmin’s “Export Your Data”.');
+  let zip; try{ zip=await JSZip.loadAsync(f); }catch(_){ throw new Error('This file couldn’t be opened as a zip — it may still be downloading or be corrupted. Try re-downloading the export from Garmin.'); }
+  const diag={json:0,zip:0,top:new Set()};
+  const files=await collect(zip,0,diag);
+  if(!files.length){ const tops=[...diag.top].slice(0,10).join(', ')||'(none)';
+    throw new Error('No Garmin health files found. This zip had '+diag.json+' JSON and '+diag.zip+' nested zip file(s). Top-level items: '+tops+'. The app needs the full “Export Your Data” archive, which contains a DI_CONNECT folder with your wellness data.'); }
+  $('spin').textContent='Parsing '+files.length+' data files…';
+  return GarminCompute.parseExport(files);
+}
+async function handleApple(f){
+  const low=f.name.toLowerCase(); let xml=null;
+  if(low.endsWith('.xml')){ xml=await f.text(); }
+  else if(low.endsWith('.zip')){
+    let zip; try{ zip=await JSZip.loadAsync(f); }catch(_){ throw new Error('Couldn’t open that .zip — it may still be downloading or be corrupted.'); }
+    let entry=null; zip.forEach((p,e)=>{ if(!e.dir && p.split('/').pop().toLowerCase()==='export.xml') entry=e; });
+    if(!entry) throw new Error('No export.xml found in this zip. Upload the Apple Health “Export All Health Data” archive (it contains export.xml), or the export.xml file itself.');
+    $('spin').textContent='Reading export.xml (large files can take a moment)…';
+    xml=await entry.async('string');
+  } else throw new Error('Upload your Apple Health export.zip or the export.xml inside it.');
+  $('spin').textContent='Parsing Apple Health data…';
+  const files=appleToGarmin(xml);
+  if(!files.length) throw new Error('No recognizable Apple Health records found. Make sure this is the full “Export All Health Data” file.');
+  return GarminCompute.parseExport(files);
+}
+function appleToGarmin(xml){
+  const dayOf=v=>v.slice(0,10);
+  const attr=(s,a)=>{ const r=new RegExp(a+'="([^"]*)"').exec(s); return r?r[1]:null; };
+  const steps={}, rhr={}, vo2={}, sleepAgg={}; const acts=[];
+  const recRe=/<Record\b([^>]*?)\/?>/g; let m;
+  while((m=recRe.exec(xml))){
+    const a=m[1], type=attr(a,'type'); if(!type) continue;
+    const start=attr(a,'startDate')||attr(a,'creationDate'), end=attr(a,'endDate')||start, val=attr(a,'value');
+    if(!start) continue;
+    if(type.endsWith('StepCount')){ const d=dayOf(start); steps[d]=(steps[d]||0)+(+val||0); }
+    else if(type.endsWith('RestingHeartRate')){ const d=dayOf(start); (rhr[d]=rhr[d]||[]).push(+val); }
+    else if(type.endsWith('VO2Max')){ vo2[dayOf(start)]=+val; }
+    else if(type.indexOf('SleepAnalysis')!==-1){
+      const secs=(new Date(end)-new Date(start))/1000; if(!(secs>0)) continue;
+      const d=dayOf(end), s=sleepAgg[d]=sleepAgg[d]||{deep:0,light:0,rem:0,awake:0}, v=(val||'').toLowerCase();
+      if(v.indexOf('deep')!==-1) s.deep+=secs; else if(v.indexOf('rem')!==-1) s.rem+=secs;
+      else if(v.indexOf('awake')!==-1) s.awake+=secs; else if(v.indexOf('asleep')!==-1||v.indexOf('inbed')!==-1) s.light+=secs;
+    }
+  }
+  const wRe=/<Workout\b([\s\S]*?)(?:\/>|<\/Workout>)/g;
+  const map={running:'running',walking:'walking',cycling:'indoor_cycling',swimming:'lap_swimming',hiking:'hiking',highintensityintervaltraining:'hiit',functionalstrengthtraining:'hiit',traditionalstrengthtraining:'hiit',elliptical:'indoor_cardio',rowing:'indoor_cardio'};
+  while((m=wRe.exec(xml))){
+    const blk=m[0], a=m[1], start=attr(a,'startDate'); if(!start) continue;
+    const type=(attr(a,'workoutActivityType')||'').replace('HKWorkoutActivityType','').toLowerCase();
+    const durUnit=(attr(a,'durationUnit')||'min'), dur=+(attr(a,'duration')||0);
+    const durSec=durUnit.indexOf('min')!==-1?dur*60:(durUnit.indexOf('hr')!==-1?dur*3600:dur);
+    let km=0; const td=attr(a,'totalDistance'), tdu=attr(a,'totalDistanceUnit');
+    if(td) km=+td*(tdu&&tdu.indexOf('mi')!==-1?1.60934:1);
+    else { const ws=/type="HKQuantityTypeIdentifierDistance[^"]*"[^>]*?sum="([\d.]+)"[^>]*?unit="([^"]*)"/.exec(blk); if(ws) km=+ws[1]*(ws[2].indexOf('mi')!==-1?1.60934:1); }
+    acts.push({activityType:map[type]||type||'other', beginTimestamp:new Date(start).getTime(), distance:Math.round(km*1000*100), duration:Math.round(durSec*1000), avgHr:+(attr(a,'averageHeartRate')||0)||null});
+  }
+  const dates=new Set([...Object.keys(steps),...Object.keys(rhr),...Object.keys(sleepAgg),...Object.keys(vo2)]);
+  const uds=[...dates].sort().map(d=>{ const rl=rhr[d]||[]; return {calendarDate:d, totalSteps:steps[d]!=null?Math.round(steps[d]):null, restingHeartRate:rl.length?Math.round(rl.reduce((a,b)=>a+b,0)/rl.length):null, moderateIntensityMinutes:0, vigorousIntensityMinutes:0, includesWellnessData:true}; });
+  const sleepArr=Object.entries(sleepAgg).map(([d,s])=>({calendarDate:d, deepSleepSeconds:Math.round(s.deep), lightSleepSeconds:Math.round(s.light), remSleepSeconds:Math.round(s.rem), awakeSleepSeconds:Math.round(s.awake)}));
+  const vo2Arr=Object.entries(vo2).map(([d,v])=>({calendarDate:d, vo2MaxValue:v}));
+  const files=[];
+  if(uds.length) files.push({name:'AppleHealth/UDSFile_apple.json', text:JSON.stringify(uds)});
+  if(sleepArr.length) files.push({name:'AppleHealth/apple_sleepData.json', text:JSON.stringify(sleepArr)});
+  if(acts.length) files.push({name:'AppleHealth/apple_summarizedActivities.json', text:JSON.stringify([{summarizedActivitiesExport:acts}])});
+  if(vo2Arr.length) files.push({name:'AppleHealth/MetricsMaxMetData_apple.json', text:JSON.stringify(vo2Arr)});
+  return files;
 }
 
 function mk(id,cfg){ const el=$(id); if(!el) return; const c=new Chart(el,cfg); charts.push(c); return c; }
@@ -450,12 +533,8 @@ function render(D){
       ${kpi(cv.active_with_sleep,'Active + sleep',Math.round(cv.active_with_sleep/cv.active*100)+'% of active')}
     </div>
     <div class="card" style="margin-top:14px;background:var(--clay-bg);border-color:#EAD5C9">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap">
-        <div class="ctitle" style="display:flex;align-items:center;gap:7px;color:var(--clay-ink)"><i class="ti ti-message-2"></i> In plain English</div>
-        <button id="aiBtn" style="font-family:inherit;font-size:12px;font-weight:500;color:var(--clay-ink);background:transparent;border:.5px solid #E0C4B6;border-radius:8px;padding:6px 11px;cursor:pointer;display:inline-flex;align-items:center;gap:6px"><i class="ti ti-sparkles" style="font-size:14px"></i> Rewrite with AI</button>
-      </div>
+      <div class="ctitle" style="display:flex;align-items:center;gap:7px;color:var(--clay-ink);margin-bottom:10px"><i class="ti ti-message-2"></i> In plain English</div>
       <div id="narrative" style="font-size:13.5px;line-height:1.65;color:#5A2A1A"></div>
-      <div id="aiStatus" style="font-size:11px;color:var(--clay-ink);opacity:.75;margin-top:8px"></div>
     </div>
   </section>`);
 
@@ -514,7 +593,6 @@ function render(D){
   corrTable(D); regChart(D);
 
   const nEl=$('narrative'); if(nEl) nEl.innerHTML=buildNarrative(D);
-  const ab=$('aiBtn'); if(ab) ab.onclick=()=>aiRewrite(D);
   setupNav();
 }
 
@@ -540,23 +618,6 @@ function buildNarrative(D){
   s4+='The single clearest lever is rebuilding a steady aerobic base — a few easy sessions each week would start bending the resting-heart-rate and VO₂ trends back. These are wellness patterns from your own data, not medical advice.';
   P.push(s4);
   return P.map(x=>`<p style="margin:0 0 10px">${x}</p>`).join('');
-}
-
-var AI_MODEL='claude-sonnet-4-5', AIKEY=null;
-async function aiRewrite(D){
-  const st=$('aiStatus'), btn=$('aiBtn');
-  if(!AIKEY){ AIKEY=window.prompt('Paste an Anthropic API key to generate an AI summary.\n\nIt is kept in memory only (never saved), and only your aggregate stats — not raw daily data — are sent.'); if(!AIKEY) return; }
-  const agg={period:D.period,coverage:D.coverage,stats:D.stats,corr:D.corr,reg:D.reg,year_dist:D.year_dist,season:D.season,activity_impact:D.activity_impact};
-  st.textContent='Asking the model…'; btn.disabled=true;
-  try{
-    const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'content-type':'application/json','x-api-key':AIKEY,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body:JSON.stringify({model:AI_MODEL,max_tokens:700,messages:[{role:'user',content:'You explain personal wearable-health data calmly and precisely. In exactly 3 short paragraphs of plain English (no bullet points, no headings), explain what this person’s data shows and the one habit most worth changing. Be honest and non-alarmist, describe associations not causes, and never give medical advice. Data (aggregate stats only): '+JSON.stringify(agg)}]})});
-    if(!r.ok){ const e=await r.text(); throw new Error(r.status+' '+e.slice(0,120)); }
-    const j=await r.json(); const txt=(j.content&&j.content[0]&&j.content[0].text)||'';
-    $('narrative').innerHTML=txt.split(/\n\n+/).filter(x=>x.trim()).map(x=>`<p style="margin:0 0 10px">${x.replace(/[<>]/g,'')}</p>`).join('');
-    st.textContent='Rewritten by Claude · only aggregate stats were sent, never your raw daily data.';
-  }catch(e){ st.textContent='Couldn’t reach the model ('+String(e.message).slice(0,80)+'). Showing the built-in summary. A browser CORS block may require serving the page from localhost rather than a file.'; }
-  btn.disabled=false;
 }
 
 const kpi=(n,l,p)=>`<div class="kpi"><div class="num">${n}</div><div class="lab">${l}</div><div class="pct">${p}</div></div>`;
