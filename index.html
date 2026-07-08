@@ -570,6 +570,80 @@ const stateCls={calm:'p-calm',watch:'p-watch',elev:'p-elev'};
 const stateSolid={calm:CALM,watch:WATCH,elev:ELEV};
 const stateInk={calm:'var(--calm-ink)',watch:'var(--watch-ink)',elev:'var(--elev-ink)'};
 
+function buildInsights(D){
+  const yd=D.year_dist||{}, S=D.stats||{}, out=[];
+  const clamp=x=>Math.max(0,Math.min(1,x));
+  const yfl=o=>{ if(!o) return null; const ys=Object.keys(o).map(Number).sort(); return ys.length?{first:o[ys[0]].med,last:o[ys[ys.length-1]].med,fy:ys[0]}:null; };
+  const n=m=>(S[m]&&S[m].n)||0;
+  const add=o=>{ o.score=(o.impact||.6)*(o.gap==null?.5:o.gap)*(o.agency||.8)*(o.conf==null?1:o.conf); out.push(o); };
+
+  let stepsMean=(S.steps&&S.steps.mean);
+  if(stepsMean==null && D.season){ const v=D.season.steps.filter(x=>x!=null); stepsMean=v.length?v.reduce((a,b)=>a+b,0)/v.length:null; }
+  if(stepsMean!=null && !isNaN(stepsMean)){ const sm=Math.round(stepsMean);
+    if(stepsMean<7000) add({lever:'Steps',status:'elev',impact:.9,agency:1,conf:1,gap:clamp((7000-stepsMean)/4000),
+      headline:`You average ${sm.toLocaleString()} steps a day — under the ~7,000 that meaningfully lowers health risk`,
+      why:'Reaching ~7k+ steps is tied to substantially lower mortality risk, and the biggest gains come from leaving the low range.',
+      action:'Add one 20-minute walk (~2,000 steps) most days',basis:'vs Lancet 2025 step dose-response'});
+    else if(stepsMean<9000) add({lever:'Steps',status:'watch',impact:.75,agency:1,conf:1,gap:clamp((9000-stepsMean)/3000),
+      headline:`You average ${sm.toLocaleString()} steps a day — solid, just shy of the ~9,000 longevity band`,
+      why:'Benefit keeps climbing toward ~9–10k steps a day for under-60s.',
+      action:'Add a short walk a few days a week to reach ~9k',basis:'vs Lancet 2025 step dose-response'});
+    else add({lever:'Steps',status:'win',impact:.5,agency:1,conf:1,gap:.6,
+      headline:`You average ${sm.toLocaleString()} steps a day — in the optimal longevity band`,
+      why:'This is roughly where the mortality benefit plateaus. Excellent.',action:'Keep it up — protect this on your busy days',basis:'vs Lancet 2025 step dose-response'});
+  }
+  const rhr=yfl(yd.RHR);
+  if(rhr){ const d=rhr.last-rhr.first;
+    if(d>=6) add({lever:'Cardio fitness',status:d>=12?'elev':'watch',impact:1,agency:.8,conf:clamp(n('rhr')/180),gap:clamp(d/15),
+      headline:`Your resting heart rate has risen ${Math.round(d)} bpm since ${rhr.fy} — now about ${rhr.last}`,
+      why:'A climbing resting heart rate usually signals fading aerobic fitness — the single strongest predictor of long-term health.',
+      action:'Do 3 easy 30-minute cardio sessions a week for a month, then recheck',basis:'vs your '+rhr.fy+' baseline'});
+    else if(d<=-4) add({lever:'Cardio fitness',status:'win',impact:.6,agency:.8,conf:1,gap:.6,
+      headline:`Your resting heart rate has dropped ${Math.abs(Math.round(d))} bpm since ${rhr.fy} — now about ${rhr.last}`,
+      why:'A falling resting heart rate is a hallmark of improving fitness.',action:'Whatever you changed is working — hold the rhythm',basis:'vs your '+rhr.fy+' baseline'});
+  }
+  const vo=yfl(yd.VO2);
+  if(vo){ const d=vo.last-vo.first;
+    if(d<=-2 || vo.last<=40) add({lever:'VO₂ max',status:vo.last<=38?'elev':'watch',impact:.9,agency:.7,conf:clamp(n('vo2')/60),gap:clamp((44-vo.last)/10+Math.max(0,-d)/6),
+      headline:`Your VO₂ max is about ${vo.last}${d<0?', down '+Math.abs(d).toFixed(1)+' from '+vo.fy:''}`,
+      why:'VO₂ max is the strongest fitness marker for longevity — and it responds quickly to short, hard efforts.',
+      action:'Add one weekly interval session (e.g. 4×4 min near-hard, easy between)',basis:'vs your '+vo.fy+' baseline'});
+  }
+  if(n('sleep')){ const med=S.sleep.median, sd=S.sleep.std;
+    if(med<7) add({lever:'Sleep',status:med<6.3?'elev':'watch',impact:.8,agency:.9,conf:clamp(S.sleep.n/120),gap:clamp((7-med)/2),
+      headline:`You sleep about ${med} h on a typical night — below the 7 hours most adults do best on`,
+      why:'Regular short sleep quietly erodes recovery, mood, and metabolic health.',
+      action:'Shift lights-out 20 minutes earlier this week',basis:'vs 7–9h guideline · '+S.sleep.n+' nights'});
+    else if(sd!=null && sd>1.6) add({lever:'Sleep',status:'watch',impact:.7,agency:.9,conf:clamp(S.sleep.n/120),gap:clamp((sd-1.5)/1.5),
+      headline:`Your sleep length swings a lot night to night (about ±${sd} h)`,
+      why:'Irregular sleep is linked to worse outcomes than simply short sleep — steadiness matters more than the odd long night.',
+      action:'Aim for a consistent bedtime, even on weekends',basis:S.sleep.n+' nights'});
+    else add({lever:'Sleep',status:'win',impact:.5,agency:.9,conf:1,gap:.5,
+      headline:`You average about ${med} h of sleep — right in the healthy range`,
+      why:'Steady, sufficient sleep is the foundation everything else builds on.',action:'Protect it — keep your schedule steady',basis:'vs 7–9h guideline'});
+  }
+  if(D.ts && D.ts.workouts && D.ts.workouts.length>=6){ const w=D.ts.workouts, recent=w[w.length-1], chronic=(w.slice(-4,-1).reduce((a,b)=>a+b,0)/3)||0;
+    if(chronic>=4 && recent<chronic*0.5) add({lever:'Consistency',status:'watch',impact:.7,agency:.9,conf:.8,gap:clamp(1-recent/chronic),
+      headline:`Your training has slipped lately — about ${recent} workouts last month vs ~${Math.round(chronic)} before`,
+      why:'The biggest driver of staying healthy isn’t intensity, it’s not stopping.',
+      action:'Pre-schedule 2 short sessions this week to break the slide',basis:'vs your recent months'});
+  }
+  out.sort((a,b)=>b.score-a.score);
+  return out;
+}
+function pickInsights(list){ if(!list.length) return []; const wins=list.filter(i=>i.status==='win'), non=list.filter(i=>i.status!=='win');
+  let chosen=non.slice(0,3); if(chosen.length<3) chosen=chosen.concat(wins).slice(0,3);
+  if(wins.length && chosen.length===3 && !chosen.some(i=>i.status==='win')) chosen[2]=wins[0];
+  return chosen; }
+function insightCard(i,hero){ const solid=(i.status==='win')?CALM:(stateSolid[i.status]||WATCH);
+  return `<div class="card" style="border-left:3px solid ${solid};border-radius:0 10px 10px 0">
+    ${hero?'<div style="font-size:11px;letter-spacing:.03em;color:var(--clay-ink);margin-bottom:6px;display:flex;align-items:center;gap:6px"><i class="ti ti-target-arrow" style="font-size:14px"></i> Your biggest lever</div>':''}
+    <div style="font-size:${hero?'15px':'13.5px'};font-weight:500;color:var(--ink);line-height:1.35">${i.headline}</div>
+    <div style="font-size:12.5px;color:var(--ink2);margin-top:6px;line-height:1.5">${i.why}</div>
+    <div style="font-size:13px;color:var(--clay-ink);margin-top:8px;display:flex;gap:6px;align-items:flex-start"><i class="ti ti-arrow-right" style="font-size:15px;margin-top:1px"></i><span>${i.action}</span></div>
+    <div style="font-size:10.5px;color:var(--mut);margin-top:7px">${i.basis}</div>
+  </div>`; }
+
 function render(D){
   $('range').innerHTML='<i class="ti ti-calendar" style="font-size:13px"></i> '+D.coverage.span+' days · '+D.period.start+' → '+D.period.end;
   const C=$('content'); C.innerHTML='';
@@ -588,78 +662,97 @@ function render(D){
   function tile(lab,val,unit,st,tricon,trtext){ const solid=stateSolid[st]||CALM;
     return `<div class="tile" style="border-top-color:${solid}"><div class="lab">${lab}</div><div class="val">${val}${unit?' <small>'+unit+'</small>':''}</div><div class="tr" style="color:${stateInk[st]}"><i class="ti ${tricon}" style="font-size:13px"></i> ${trtext}</div></div>`; }
 
-  // ===== OVERVIEW =====
-  let tiles='';
-  if(hr) tiles+=tile('Resting HR',hr.now,'bpm',hr.st, hr.delta>0?'ti-trending-up':'ti-trending-down', fmt(hr.delta)+' bpm over time');
-  if(vo) tiles+=tile('VO₂ max',vo.now,'',vo.st, vo.delta<0?'ti-trending-down':'ti-trending-up', fmt(vo.delta)+' over time');
-  if(sl) tiles+=tile('Sleep',sl.now,'h',sl.st, sl.delta<0?'ti-trending-down':'ti-minus', (sl.now<7?'below 7h target':'on target'));
-  if(stepsMean) tiles+=tile('Steps',stepsMean.toLocaleString(),'',(stepsMean>=8000?'calm':'watch'),'ti-activity','daily average');
+  // ===== capability flags — only render what the data supports =====
+  const has=s=>!!(s&&s.n>0);
+  const hasRHR=has(D.stats.rhr), hasVO2=has(D.stats.vo2), hasPace=has(D.stats.pace), hasSleep=has(D.stats.sleep);
+  const hasSteps=stepsMean!=null && !isNaN(stepsMean);
+  const hasActs=!!(D.counts&&D.counts.activities>0)&&D.type_year.types.length>0;
+  const hasImpact=!!(D.activity_impact&&D.activity_impact.length);
+  const hasSS=D.scatter_sleep_steps.length>0, hasSR=D.scatter_stress_rhr.length>0;
+  const hasCorr=hasSS||hasSR;
+  const caps={hasActs,hasSleep};
+
+  // ===== OVERVIEW — movement-first; empty metrics drop out automatically =====
+  const tiles=[];
+  if(hasSteps) tiles.push(tile('Steps',stepsMean.toLocaleString(),'',(stepsMean>=8000?'calm':stepsMean>=5000?'watch':'elev'),'ti-activity','daily average'));
+  if(hr) tiles.push(tile('Resting HR',hr.now,'bpm',hr.st, hr.delta>0?'ti-trending-up':'ti-trending-down', fmt(hr.delta)+' bpm over time'));
+  if(sl) tiles.push(tile('Sleep',sl.now,'h',sl.st, sl.delta<0?'ti-trending-down':'ti-minus', (sl.now<7?'below 7h target':'on target')));
+  if(vo) tiles.push(tile('VO₂ max',vo.now,'',vo.st, vo.delta<0?'ti-trending-down':'ti-trending-up', fmt(vo.delta)+' over time'));
 
   const cv=D.coverage;
+  const ck=[kpi(cv.worn,'Days with data',Math.round(cv.worn/cv.span*100)+'% of period'), kpi(cv.active,'Active days',cv.worn?Math.round(cv.active/cv.worn*100)+'% of days':'—')];
+  if(hasSleep){ ck.push(kpi(cv.sleep,'Sleep recorded',Math.round(cv.sleep/cv.worn*100)+'% of days')); ck.push(kpi(cv.active_with_sleep,'Active + sleep',cv.active?Math.round(cv.active_with_sleep/cv.active*100)+'% of active':'—')); }
+  const coach=pickInsights(buildInsights(D));
+  const coachHtml=coach.length?`<div style="margin:2px 0 18px">${insightCard(coach[0],true)}${coach.length>1?`<div class="grid g2" style="margin-top:12px">${coach.slice(1).map(i=>insightCard(i,false)).join('')}</div>`:''}</div>`:'';
   add(`<section id="sec-overview">
     <h2>Your health at a glance</h2>
     <div class="seclead">${cv.span} days of data.</div>
-    <div class="grid g4" style="margin-bottom:14px">${tiles}</div>
-    <div class="legend"><span><span class="dot" style="background:${CALM}"></span> Calm · in range</span><span><span class="dot" style="background:${WATCH}"></span> Watch · drifting</span><span><span class="dot" style="background:${ELEV}"></span> Elevated · off target</span></div>
-    <div class="grid g4" style="margin-top:6px">
-      ${kpi(cv.worn,'Days watch worn',Math.round(cv.worn/cv.span*100)+'% of period')}
-      ${kpi(cv.active,'Active days',Math.round(cv.active/cv.worn*100)+'% of worn')}
-      ${kpi(cv.sleep,'Sleep recorded',Math.round(cv.sleep/cv.worn*100)+'% of worn')}
-      ${kpi(cv.active_with_sleep,'Active + sleep',Math.round(cv.active_with_sleep/cv.active*100)+'% of active')}
-    </div>
+    ${coachHtml}
+    ${tiles.length?`<div class="grid g4" style="margin-bottom:14px">${tiles.join('')}</div>
+    <div class="legend"><span><span class="dot" style="background:${CALM}"></span> Calm · in range</span><span><span class="dot" style="background:${WATCH}"></span> Watch</span><span><span class="dot" style="background:${ELEV}"></span> Elevated</span></div>`:''}
+    <div class="grid g4" style="margin-top:6px">${ck.join('')}</div>
   </section>`);
 
   // ===== DISTRIBUTIONS =====
-  add(`<section id="sec-dist"><h2>Distributions</h2><div class="seclead">Where your days actually fall, and how the spread has shifted year to year.</div>
-    <div class="grid g2">
-      ${cc('Resting heart rate (bpm)',statLine(D.stats.rhr),'cRhr')}
-      ${cc('VO₂ max (ml/kg/min)',statLine(D.stats.vo2),'cVo2')}
-      ${cc('Running pace (min/km)',statLine(D.stats.pace),'cPace')}
-      ${cc('Sleep duration (hours)',statLine(D.stats.sleep),'cSleep')}
-    </div>
-    <div class="grid g4" style="margin-top:12px">
-      ${cch('Resting HR by year','yRhr')}${cch('VO₂ by year','yVo2')}${cch('Pace by year','yPace')}${cch('Sleep by year','ySleep')}
-    </div>
-    <div class="card" style="margin-top:12px"><div class="ctitle">Year-by-year median (p25–p75)</div><table id="yearTable"></table></div>
-  </section>`);
-  bar('cRhr',D.dist.rhr,DIST.rhr); bar('cVo2',D.dist.vo2,DIST.vo2); bar('cPace',D.dist.pace,DIST.pace); bar('cSleep',D.dist.sleep,DIST.sleep);
-  yearShift('yRhr',yd.RHR,DIST.rhr); yearShift('yVo2',yd.VO2,DIST.vo2); yearShift('yPace',yd.Pace,DIST.pace); yearShift('ySleep',yd.Sleep,DIST.sleep);
-  yearTable(D);
+  const distCards=[], yCards=[];
+  if(hasRHR){ distCards.push(cc('Resting heart rate (bpm)',statLine(D.stats.rhr),'cRhr')); yCards.push(cch('Resting HR by year','yRhr')); }
+  if(hasVO2){ distCards.push(cc('VO₂ max (ml/kg/min)',statLine(D.stats.vo2),'cVo2')); yCards.push(cch('VO₂ by year','yVo2')); }
+  if(hasPace){ distCards.push(cc('Running pace (min/km)',statLine(D.stats.pace),'cPace')); yCards.push(cch('Pace by year','yPace')); }
+  if(hasSleep){ distCards.push(cc('Sleep duration (hours)',statLine(D.stats.sleep),'cSleep')); yCards.push(cch('Sleep by year','ySleep')); }
+  if(distCards.length){
+    add(`<section id="sec-dist"><h2>Distributions</h2><div class="seclead">Where your days fall, and how the spread shifts year to year.</div>
+      <div class="grid g2">${distCards.join('')}</div>
+      ${yCards.length?`<div class="grid g4" style="margin-top:12px">${yCards.join('')}</div><div class="card" style="margin-top:12px"><div class="ctitle">Year-by-year median (p25–p75)</div><table id="yearTable"></table></div>`:''}
+    </section>`);
+    if(hasRHR){ bar('cRhr',D.dist.rhr,DIST.rhr); yearShift('yRhr',yd.RHR,DIST.rhr); }
+    if(hasVO2){ bar('cVo2',D.dist.vo2,DIST.vo2); yearShift('yVo2',yd.VO2,DIST.vo2); }
+    if(hasPace){ bar('cPace',D.dist.pace,DIST.pace); yearShift('yPace',yd.Pace,DIST.pace); }
+    if(hasSleep){ bar('cSleep',D.dist.sleep,DIST.sleep); yearShift('ySleep',yd.Sleep,DIST.sleep); }
+    if(yCards.length) yearTable(D);
+  }
 
   // ===== TRENDS =====
-  add(`<section id="sec-trends"><h2>Trends &amp; seasonality</h2><div class="seclead">How your months differ, and the full month-by-month trajectory.</div>
-    ${ccFull('Workouts/mo (bars) · avg steps · avg sleep','cSeason',300)}
-    <div class="grid g4" id="seasonKpi" style="margin-top:12px"></div>
-    ${ccFull('Every month, Dec 2023 onward — workouts &amp; avg steps','cTS',260)}
-  </section>`);
-  seasonChart(D); tsChart(D);
+  if(hasSteps||hasActs){
+    const seasonTitle='By month'+(hasActs?' — workouts (bars) · avg steps':' — avg daily steps')+(hasSleep?' · avg sleep':'');
+    add(`<section id="sec-trends"><h2>Trends &amp; seasonality</h2><div class="seclead">How your months differ, and the month-by-month trajectory.</div>
+      ${ccFull(seasonTitle,'cSeason',300)}
+      <div class="grid g4" id="seasonKpi" style="margin-top:12px"></div>
+      ${ccFull('Every month — '+(hasActs?'workouts &amp; ':'')+'avg steps','cTS',260)}
+    </section>`);
+    seasonChart(D,caps); tsChart(D,caps);
+  }
 
   // ===== TRAINING =====
-  add(`<section id="sec-train"><h2>Training</h2><div class="seclead">What you do, when you do it, and how your body responds.</div>
-    <div class="grid g2">
-      ${cch('Workouts per year, by type','cTY',260)}
-      <div class="card"><div class="ctitle">Counts by year</div><div class="cnote"></div><table id="tyTable"></table></div>
-    </div>
-    ${ccFull('When in the year you do each activity','cTM',260)}
-    ${ccFull('Next-day resting HR vs your 30-day baseline — below is better','cAct',250)}
-  </section>`);
-  stacked('cTY',D.type_year.years,D.type_year.types,D.type_year.matrix); tyTable(D);
-  stacked('cTM',M,D.type_month.types,D.type_month.matrix);
-  actChart(D);
+  if(hasActs){
+    add(`<section id="sec-train"><h2>Training</h2><div class="seclead">What you do, and when.</div>
+      <div class="grid g2">
+        ${cch('Workouts per year, by type','cTY',260)}
+        <div class="card"><div class="ctitle">Counts by year</div><table id="tyTable"></table></div>
+      </div>
+      ${ccFull('When in the year you do each activity','cTM',260)}
+      ${hasImpact?ccFull('Next-day resting HR vs your 30-day baseline — below is better','cAct',250):''}
+    </section>`);
+    stacked('cTY',D.type_year.years,D.type_year.types,D.type_year.matrix); tyTable(D);
+    stacked('cTM',M,D.type_month.types,D.type_month.matrix);
+    if(hasImpact) actChart(D);
+  }
 
   // ===== CORRELATIONS =====
-  add(`<section id="sec-corr"><h2>Correlations</h2><div class="seclead">How sleep, steps, and stress move with each other — and with your resting heart rate.</div>
-    <div class="grid g2">
-      ${cc('Sleep vs steps','r = '+fmt(D.corr.sleep_steps),'cSS')}
-      ${cc('Stress vs resting HR','r = '+fmt(D.corr.rhr_stress),'cSR')}
-    </div>
-    <div class="grid g2" style="margin-top:12px">
-      <div class="card"><div class="ctitle">Correlation matrix</div><div class="cnote">toward +1 = move together · toward −1 = opposite</div><table id="corrTable"></table></div>
-      ${cc('What drives resting HR?','RHR ~ sleep+steps+stress · R²='+fmt(D.reg.r2)+' · bpm per 1 SD','cReg')}
-    </div>
-  </section>`);
-  scatter('cSS',D.scatter_sleep_steps,'Sleep (h)','Steps'); scatter('cSR',D.scatter_stress_rhr,'Avg stress','Resting HR');
-  corrTable(D); regChart(D);
+  if(hasCorr){
+    const corrCards=[];
+    if(hasSS) corrCards.push(cc('Sleep vs steps','r = '+fmt(D.corr.sleep_steps),'cSS'));
+    if(hasSR) corrCards.push(cc('Stress vs resting HR','r = '+fmt(D.corr.rhr_stress),'cSR'));
+    add(`<section id="sec-corr"><h2>Correlations</h2><div class="seclead">How sleep, steps, and stress move with each other — and with your resting heart rate.</div>
+      ${corrCards.length?`<div class="grid g2">${corrCards.join('')}</div>`:''}
+      <div class="grid g2" style="margin-top:12px">
+        <div class="card"><div class="ctitle">Correlation matrix</div><div class="cnote">toward +1 = move together · toward −1 = opposite</div><table id="corrTable"></table></div>
+        ${D.reg.r2!=null?cc('What drives resting HR?','RHR ~ sleep+steps+stress · R²='+fmt(D.reg.r2)+' · bpm per 1 SD','cReg'):''}
+      </div>
+    </section>`);
+    if(hasSS) scatter('cSS',D.scatter_sleep_steps,'Sleep (h)','Steps');
+    if(hasSR) scatter('cSR',D.scatter_stress_rhr,'Avg stress','Resting HR');
+    corrTable(D); if(D.reg.r2!=null) regChart(D);
+  }
 
   setupNav();
 }
@@ -683,24 +776,27 @@ function tyTable(D){ const t=D.type_year; let h=`<tr><th>Type</th>${t.years.map(
   t.types.forEach((ty,i)=>{ h+=`<tr><td><span class="pill p-neu" style="color:${PAL[ty]||'#6B6459'}">${ty}</span></td>${t.matrix[i].map(v=>`<td class="r">${v||'·'}</td>`).join('')}<td class="r" style="font-weight:500">${t.totals[i]}</td></tr>`; });
   const el=$('tyTable'); if(el) el.innerHTML=h; }
 
-function seasonChart(D){ const s=D.season; if(!s) return;
-  mk('cSeason',{data:{labels:s.months,datasets:[
-    {type:'bar',label:'Workouts/mo',data:s.workouts,backgroundColor:'#C08A2Baa',borderRadius:3,yAxisID:'y',order:3},
-    {type:'line',label:'Avg steps',data:s.steps,borderColor:'#2F8F6F',pointRadius:3,tension:.3,yAxisID:'y1',order:1},
-    {type:'line',label:'Avg sleep (h)',data:s.sleep,borderColor:'#3F72A6',pointRadius:3,tension:.3,yAxisID:'y2',order:2}]},
+function seasonChart(D,caps){ const s=D.season; if(!s) return; caps=caps||{};
+  const ds=[];
+  if(caps.hasActs) ds.push({type:'bar',label:'Workouts/mo',data:s.workouts,backgroundColor:'#C08A2Baa',borderRadius:3,yAxisID:'y',order:3});
+  ds.push({type:'line',label:'Avg steps',data:s.steps,borderColor:'#2F8F6F',pointRadius:3,tension:.3,yAxisID:'y1',order:1});
+  if(caps.hasSleep) ds.push({type:'line',label:'Avg sleep (h)',data:s.sleep,borderColor:'#3F72A6',pointRadius:3,tension:.3,yAxisID:'y2',order:2});
+  mk('cSeason',{data:{labels:s.months,datasets:ds},
    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:true,position:'bottom',labels:{boxWidth:9,font:{size:10}}}},
-    scales:{x:{grid:{display:false},ticks:{color:MUT}},y:{position:'left',...noGrid,title:{display:true,text:'workouts',color:MUT}},y1:{position:'right',grid:{display:false},ticks:{color:'#2F8F6F'}},y2:{display:false,min:4,max:10}}}});
+    scales:{x:{grid:{display:false},ticks:{color:MUT}},y:{position:'left',display:!!caps.hasActs,...noGrid,title:{display:!!caps.hasActs,text:'workouts',color:MUT}},y1:{position:'right',grid:{display:false},ticks:{color:'#2F8F6F'},title:{display:true,text:'steps',color:'#2F8F6F'}},y2:{display:false,min:4,max:10}}}});
   const idxMax=a=>a.indexOf(Math.max(...a.map(v=>v==null?-1:v))), idxMin=a=>a.indexOf(Math.min(...a.map(v=>v==null?1e9:v)));
-  const wa=idxMax(s.workouts),wl=idxMin(s.workouts),sa=idxMax(s.sleep),sl=idxMin(s.sleep);
-  const k=[[s.months[wa],'Most active',s.workouts[wa]+' /mo','calm'],[s.months[wl],'Least active',s.workouts[wl]+' /mo','elev'],[s.months[sa],'Best sleep',s.sleep[sa]+' h','calm'],[s.months[sl],'Worst sleep',s.sleep[sl]+' h','elev']];
-  const el=$('seasonKpi'); if(el) el.innerHTML=k.map(x=>`<div class="tile" style="border-top-color:${stateSolid[x[3]]}"><div class="lab">${x[1]}</div><div class="val">${x[0]}</div><div class="tr" style="color:var(--mut)">${x[2]}</div></div>`).join('');
+  const k=[];
+  if(caps.hasActs){ const wa=idxMax(s.workouts),wl=idxMin(s.workouts); k.push([s.months[wa],'Most active',s.workouts[wa]+' /mo','calm'],[s.months[wl],'Least active',s.workouts[wl]+' /mo','elev']); }
+  if(caps.hasSleep){ const sa=idxMax(s.sleep),sm=idxMin(s.sleep); k.push([s.months[sa],'Best sleep',s.sleep[sa]+' h','calm'],[s.months[sm],'Worst sleep',s.sleep[sm]+' h','elev']); }
+  const stMax=idxMax(s.steps),stMin=idxMin(s.steps); k.push([s.months[stMax],'Most steps',Math.round(s.steps[stMax]||0).toLocaleString(),'calm'],[s.months[stMin],'Fewest steps',Math.round(s.steps[stMin]||0).toLocaleString(),'elev']);
+  const el=$('seasonKpi'); if(el) el.innerHTML=k.slice(0,4).map(x=>`<div class="tile" style="border-top-color:${stateSolid[x[3]]}"><div class="lab">${x[1]}</div><div class="val">${x[0]}</div><div class="tr" style="color:var(--mut)">${x[2]}</div></div>`).join('');
 }
-function tsChart(D){ const t=D.ts; if(!t) return;
-  mk('cTS',{data:{labels:t.labels,datasets:[
-    {type:'bar',label:'Workouts',data:t.workouts,backgroundColor:'#C08A2Baa',borderRadius:2,yAxisID:'y'},
-    {type:'line',label:'Avg steps',data:t.steps,borderColor:'#2F8F6F',pointRadius:0,borderWidth:2,tension:.3,yAxisID:'y1'}]},
+function tsChart(D,caps){ const t=D.ts; if(!t) return; caps=caps||{};
+  const ds=[]; if(caps.hasActs) ds.push({type:'bar',label:'Workouts',data:t.workouts,backgroundColor:'#C08A2Baa',borderRadius:2,yAxisID:'y'});
+  ds.push({type:'line',label:'Avg steps',data:t.steps,borderColor:'#2F8F6F',pointRadius:0,borderWidth:2,tension:.3,yAxisID:'y1'});
+  mk('cTS',{data:{labels:t.labels,datasets:ds},
    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:true,position:'bottom',labels:{boxWidth:9,font:{size:10}}}},
-    scales:{x:{grid:{display:false},ticks:{color:MUT,maxRotation:90,minRotation:90,font:{size:9}}},y:{position:'left',...noGrid,title:{display:true,text:'workouts',color:MUT}},y1:{position:'right',grid:{display:false},ticks:{color:'#2F8F6F'}}}}});
+    scales:{x:{grid:{display:false},ticks:{color:MUT,maxRotation:90,minRotation:90,font:{size:9}}},y:{position:'left',display:!!caps.hasActs,...noGrid,title:{display:!!caps.hasActs,text:'workouts',color:MUT}},y1:{position:'right',grid:{display:false},ticks:{color:'#2F8F6F'}}}}});
 }
 function corrTable(D){ const c=D.corr; const rows=[['Sleep ↔ Steps',c.sleep_steps],['Stress ↔ Sleep',c.stress_sleep],['Stress ↔ Steps',c.stress_steps],['Resting HR ↔ Sleep',c.rhr_sleep],['Resting HR ↔ Steps',c.rhr_steps],['Resting HR ↔ Stress',c.rhr_stress]];
   const tag=v=>{ if(v==null) return '<span class="pill p-neu">n/a</span>'; const a=Math.abs(v); const lbl=a<0.1?'negligible':a<0.25?'weak':a<0.5?'moderate':'strong'; const cls=a<0.1?'p-neu':(v>0?'p-elev':'p-calm'); return `<span class="pill ${cls}">${v>0?'+':''}${v} · ${lbl}</span>`; };
@@ -710,7 +806,10 @@ function actChart(D){ const ai=D.activity_impact; if(!ai||!ai.length) return;
   mk('cAct',{type:'bar',data:{labels:ai.map(a=>a.a+' (n='+a.n+')'),datasets:[{data:ai.map(a=>a.rhr_delta),backgroundColor:ai.map(a=>a.rhr_delta<0?CALM:ELEV),borderRadius:4}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,scales:{x:{...noGrid,title:{display:true,text:'next-day resting HR vs baseline (bpm)',color:MUT}},y:{grid:{display:false},ticks:{color:INK2}}}}});
 }
 
-function setupNav(){ const items=[...document.querySelectorAll('.navitem[data-t]')];
+function setupNav(){ const all=[...document.querySelectorAll('.navitem[data-t]')];
+  all.forEach(it=>{ const present=!!$(it.dataset.t); it.style.display=present?'':'none'; });
+  const items=all.filter(it=>$(it.dataset.t));
+  if(items.length){ items.forEach(x=>x.classList.remove('active')); items[0].classList.add('active'); $('ptitle').textContent=items[0].textContent.trim(); }
   items.forEach(it=>it.onclick=()=>{ const el=$(it.dataset.t); if(el){ el.scrollIntoView({behavior:'smooth'}); items.forEach(x=>x.classList.remove('active')); it.classList.add('active'); $('ptitle').textContent=it.textContent.trim(); } });
   const secs=items.map(it=>$(it.dataset.t)).filter(Boolean);
   const io=new IntersectionObserver(es=>{ es.forEach(e=>{ if(e.isIntersecting){ const id=e.target.id; items.forEach(x=>x.classList.toggle('active',x.dataset.t===id)); const a=items.find(x=>x.dataset.t===id); if(a) $('ptitle').textContent=a.textContent.trim(); } }); },{rootMargin:'-45% 0px -50% 0px'});
