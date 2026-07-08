@@ -362,15 +362,33 @@ function reset(){ $('dashView').classList.add('hidden'); $('uploadView').classLi
 $('again').onclick=reset; $('again2').onclick=reset;
 
 const WANT=['UDSFile','sleepData','summarizedActivities','MetricsMaxMetData'];
+async function collect(zip, depth, diag){
+  const out=[], inner=[], tasks=[];
+  zip.forEach((p,e)=>{
+    if(e.dir) return;
+    const low=p.toLowerCase(), seg=p.split('/').filter(Boolean)[0];
+    if(seg) diag.top.add(seg);
+    if(low.endsWith('.json')){ diag.json++; if(WANT.some(w=>p.indexOf(w)!==-1)) tasks.push(e.async('string').then(t=>out.push({name:p,text:t}))); }
+    else if(low.endsWith('.zip')){ diag.zip++; inner.push(e); }
+  });
+  await Promise.all(tasks);
+  if(!out.length && depth<3 && inner.length){
+    for(const e of inner){ try{ const buf=await e.async('uint8array'); const z=await JSZip.loadAsync(buf); out.push(...await collect(z,depth+1,diag)); }catch(_){} }
+  }
+  return out;
+}
 async function handle(f){
-  $('err').textContent=''; $('spin').classList.remove('hidden');
+  $('err').textContent=''; $('spin').classList.remove('hidden'); $('spin').textContent='Reading your export…';
   try{
-    if(!f.name.toLowerCase().endsWith('.zip')) throw new Error('Please upload the .zip file from Garmin.');
-    const zip=await JSZip.loadAsync(f); const entries=[];
-    zip.forEach((p,e)=>{ if(!e.dir && p.toLowerCase().endsWith('.json') && WANT.some(w=>p.indexOf(w)!==-1)) entries.push(e); });
-    if(!entries.length) throw new Error('Could not find Garmin health files. Make sure it is the full "Export Your Data" archive (it contains a DI_CONNECT folder).');
-    $('spin').textContent='Parsing '+entries.length+' data files…';
-    const files=await Promise.all(entries.map(async e=>({name:e.name, text:await e.async('string')})));
+    if(!f.name.toLowerCase().endsWith('.zip')) throw new Error('That doesn’t look like a .zip. Upload the .zip archive from Garmin’s “Export Your Data”.');
+    let zip; try{ zip=await JSZip.loadAsync(f); }catch(_){ throw new Error('This file couldn’t be opened as a zip — it may still be downloading or be corrupted. Try re-downloading the export from Garmin.'); }
+    const diag={json:0,zip:0,top:new Set()};
+    const files=await collect(zip,0,diag);
+    if(!files.length){
+      const tops=[...diag.top].slice(0,10).join(', ')||'(none)';
+      throw new Error('No Garmin health files found. This zip had '+diag.json+' JSON and '+diag.zip+' nested zip file(s). Top-level items: '+tops+'. The app needs the full “Export Your Data” archive, which contains a DI_CONNECT folder with your wellness data.');
+    }
+    $('spin').textContent='Parsing '+files.length+' data files…';
     render(GarminCompute.parseExport(files));
     $('spin').classList.add('hidden'); $('spin').textContent='Reading your export…';
     $('uploadView').classList.add('hidden'); $('dashView').classList.remove('hidden'); window.scrollTo(0,0);
@@ -431,7 +449,14 @@ function render(D){
       ${kpi(cv.sleep,'Sleep recorded',Math.round(cv.sleep/cv.worn*100)+'% of worn')}
       ${kpi(cv.active_with_sleep,'Active + sleep',Math.round(cv.active_with_sleep/cv.active*100)+'% of active')}
     </div>
-    <div class="callout"><i class="ti ti-bulb ic"></i><b>What would help most.</b> Rebuild an aerobic base — three easy sessions a week would start reversing the resting-HR and VO₂ trends within weeks. Wellness insights, not medical advice.</div>
+    <div class="card" style="margin-top:14px;background:var(--clay-bg);border-color:#EAD5C9">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap">
+        <div class="ctitle" style="display:flex;align-items:center;gap:7px;color:var(--clay-ink)"><i class="ti ti-message-2"></i> In plain English</div>
+        <button id="aiBtn" style="font-family:inherit;font-size:12px;font-weight:500;color:var(--clay-ink);background:transparent;border:.5px solid #E0C4B6;border-radius:8px;padding:6px 11px;cursor:pointer;display:inline-flex;align-items:center;gap:6px"><i class="ti ti-sparkles" style="font-size:14px"></i> Rewrite with AI</button>
+      </div>
+      <div id="narrative" style="font-size:13.5px;line-height:1.65;color:#5A2A1A"></div>
+      <div id="aiStatus" style="font-size:11px;color:var(--clay-ink);opacity:.75;margin-top:8px"></div>
+    </div>
   </section>`);
 
   // ===== DISTRIBUTIONS =====
@@ -488,7 +513,50 @@ function render(D){
   scatter('cSS',D.scatter_sleep_steps,'Sleep (h)','Steps'); scatter('cSR',D.scatter_stress_rhr,'Avg stress','Resting HR');
   corrTable(D); regChart(D);
 
+  const nEl=$('narrative'); if(nEl) nEl.innerHTML=buildNarrative(D);
+  const ab=$('aiBtn'); if(ab) ab.onclick=()=>aiRewrite(D);
   setupNav();
+}
+
+function yFL(o){ if(!o) return null; const ys=Object.keys(o).map(Number).sort(); if(!ys.length) return null; return {fy:ys[0],ly:ys[ys.length-1],first:o[ys[0]].med,last:o[ys[ys.length-1]].med}; }
+function buildNarrative(D){
+  const cv=D.coverage, yd=D.year_dist||{};
+  const rhr=yFL(yd.RHR), vo=yFL(yd.VO2), sl=yFL(yd.Sleep), pc=yFL(yd.Pace);
+  const P=[];
+  P.push(`Across ${cv.span} days you wore your watch on ${Math.round(cv.worn/cv.span*100)}% of them — a strong, consistent record. Sleep was captured on ${cv.sleep} nights (${Math.round(cv.sleep/cv.worn*100)}% of worn days), the thinnest slice, so the sleep read-outs rest on fewer data points than the rest.`);
+  if(rhr){ const rose=rhr.last>rhr.first; let s=`Your resting heart rate has ${rose?'risen':'eased'} from ${rhr.first} to ${rhr.last} bpm since ${rhr.fy}`;
+    if(vo) s+=`, VO₂ max has moved ${vo.first} → ${vo.last}`;
+    if(pc) s+=`, and running pace has gone ${pc.first} → ${pc.last} min/km`;
+    s+=`. ${rose?'Taken together these point to a real dip in aerobic fitness — the kind that follows reduced training rather than anything sudden.':'These markers are holding steady or improving.'}`;
+    P.push(s); }
+  if(D.season){ const s=D.season, wa=s.workouts.indexOf(Math.max(...s.workouts)), wl=s.workouts.indexOf(Math.min(...s.workouts.map(v=>v==null?1e9:v)));
+    let t=`You train most in ${s.months[wa]} (~${s.workouts[wa]} workouts a month) and least in ${s.months[wl]} (~${s.workouts[wl]})`;
+    if(sl) t+=`, and sleep now averages ${sl.last} h${sl.last<7?' — under the 7 hours you tend to do best on':''}`;
+    P.push(t+'.'); }
+  let s4='';
+  s4 += (Math.abs(D.corr.rhr_stress||0)>=0.3) ? 'Among the relationships in your data, higher-stress days clearly run with a higher resting heart rate. ' : 'The day-to-day links between sleep, steps and stress are real but modest. ';
+  if(D.activity_impact && D.activity_impact.length){ const b=D.activity_impact[0], w=D.activity_impact[D.activity_impact.length-1];
+    if(b.rhr_delta<0) s4+=`Your body recovers best after ${b.a.toLowerCase()}, and looks most taxed the day after ${w.a.toLowerCase()}. `; }
+  s4+='The single clearest lever is rebuilding a steady aerobic base — a few easy sessions each week would start bending the resting-heart-rate and VO₂ trends back. These are wellness patterns from your own data, not medical advice.';
+  P.push(s4);
+  return P.map(x=>`<p style="margin:0 0 10px">${x}</p>`).join('');
+}
+
+var AI_MODEL='claude-sonnet-4-5', AIKEY=null;
+async function aiRewrite(D){
+  const st=$('aiStatus'), btn=$('aiBtn');
+  if(!AIKEY){ AIKEY=window.prompt('Paste an Anthropic API key to generate an AI summary.\n\nIt is kept in memory only (never saved), and only your aggregate stats — not raw daily data — are sent.'); if(!AIKEY) return; }
+  const agg={period:D.period,coverage:D.coverage,stats:D.stats,corr:D.corr,reg:D.reg,year_dist:D.year_dist,season:D.season,activity_impact:D.activity_impact};
+  st.textContent='Asking the model…'; btn.disabled=true;
+  try{
+    const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'content-type':'application/json','x-api-key':AIKEY,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:AI_MODEL,max_tokens:700,messages:[{role:'user',content:'You explain personal wearable-health data calmly and precisely. In exactly 3 short paragraphs of plain English (no bullet points, no headings), explain what this person’s data shows and the one habit most worth changing. Be honest and non-alarmist, describe associations not causes, and never give medical advice. Data (aggregate stats only): '+JSON.stringify(agg)}]})});
+    if(!r.ok){ const e=await r.text(); throw new Error(r.status+' '+e.slice(0,120)); }
+    const j=await r.json(); const txt=(j.content&&j.content[0]&&j.content[0].text)||'';
+    $('narrative').innerHTML=txt.split(/\n\n+/).filter(x=>x.trim()).map(x=>`<p style="margin:0 0 10px">${x.replace(/[<>]/g,'')}</p>`).join('');
+    st.textContent='Rewritten by Claude · only aggregate stats were sent, never your raw daily data.';
+  }catch(e){ st.textContent='Couldn’t reach the model ('+String(e.message).slice(0,80)+'). Showing the built-in summary. A browser CORS block may require serving the page from localhost rather than a file.'; }
+  btn.disabled=false;
 }
 
 const kpi=(n,l,p)=>`<div class="kpi"><div class="num">${n}</div><div class="lab">${l}</div><div class="pct">${p}</div></div>`;
