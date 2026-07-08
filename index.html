@@ -108,6 +108,8 @@ td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
   <div class="srcpick" id="srcpick">
     <button class="srccard active" data-src="garmin"><i class="ti ti-activity-heartbeat" aria-hidden="true"></i><span><span class="n">Garmin</span><br><span class="d">Connect “Export Your Data” .zip</span></span></button>
     <button class="srccard" data-src="apple"><i class="ti ti-heart" aria-hidden="true"></i><span><span class="n">Apple Health</span><br><span class="d">export.zip or export.xml</span></span></button>
+    <button class="srccard" data-src="fitbit"><i class="ti ti-walk" aria-hidden="true"></i><span><span class="n">Fitbit</span><br><span class="d">Google Takeout .zip</span></span></button>
+    <button class="srccard" data-src="coros"><i class="ti ti-mountain" aria-hidden="true"></i><span><span class="n">COROS</span><br><span class="d">Training Hub .zip (TCX)</span></span></button>
   </div>
   <div class="drop" id="drop">
     <div class="big" id="dropBig">Drop your Garmin export .zip here</div>
@@ -376,7 +378,9 @@ $('again').onclick=reset; $('again2').onclick=reset;
 
 const SRC={
   garmin:{ext:'.zip', big:'Drop your Garmin export .zip here', how:'Sign in at garmin.com/account → Export Your Data. Garmin emails a download link within a few days. Upload the .zip here as-is.'},
-  apple:{ext:'.zip,.xml', big:'Drop your Apple Health export here', how:'On your iPhone: open Health → tap your photo (top-right) → Export All Health Data. AirDrop or email the export.zip to this computer, then upload it here (or the export.xml inside it). Large exports may take a moment to parse.'}
+  apple:{ext:'.zip,.xml', big:'Drop your Apple Health export here', how:'On your iPhone: open Health → tap your photo (top-right) → Export All Health Data. AirDrop or email the export.zip to this computer, then upload it here (or the export.xml inside it). Large exports may take a moment to parse.'},
+  fitbit:{ext:'.zip', big:'Drop your Fitbit (Google Takeout) .zip here', how:'Go to takeout.google.com → Deselect all → tick “Fitbit” → export as a .zip. Download it and upload the .zip here.'},
+  coros:{ext:'.zip,.tcx', big:'Drop your COROS export here', how:'In COROS Training Hub (web) → Activity List → Export Data → choose TCX. You’ll be emailed the files — upload the .zip (or a single .tcx). Note: COROS exports workouts only, so sleep and resting heart rate won’t appear.'}
 };
 let curSource='garmin';
 function setSource(s){ curSource=s; const c=SRC[s];
@@ -404,7 +408,8 @@ async function collect(zip, depth, diag){
 async function handle(f){
   $('err').textContent=''; $('spin').classList.remove('hidden'); $('spin').textContent='Reading your export…';
   try{
-    const payload = curSource==='apple' ? await handleApple(f) : await handleGarmin(f);
+    const H={garmin:handleGarmin, apple:handleApple, fitbit:handleFitbit, coros:handleCoros};
+    const payload = await (H[curSource]||handleGarmin)(f);
     render(payload);
     $('spin').classList.add('hidden'); $('spin').textContent='Reading your export…';
     $('uploadView').classList.add('hidden'); $('dashView').classList.remove('hidden'); window.scrollTo(0,0);
@@ -476,6 +481,76 @@ function appleToGarmin(xml){
   if(acts.length) files.push({name:'AppleHealth/apple_summarizedActivities.json', text:JSON.stringify([{summarizedActivitiesExport:acts}])});
   if(vo2Arr.length) files.push({name:'AppleHealth/MetricsMaxMetData_apple.json', text:JSON.stringify(vo2Arr)});
   return files;
+}
+
+async function handleFitbit(f){
+  if(!f.name.toLowerCase().endsWith('.zip')) throw new Error('Upload the Google Takeout .zip that contains your Fitbit data.');
+  let zip; try{ zip=await JSZip.loadAsync(f); }catch(_){ throw new Error('Couldn’t open that .zip — it may still be downloading or be corrupted.'); }
+  const pat=['steps-','resting_heart_rate-','sleep-','exercise-','very_active_minutes-','moderately_active_minutes-'];
+  const ents=[]; zip.forEach((p,e)=>{ if(e.dir) return; const b=p.split('/').pop().toLowerCase(); if(b.endsWith('.json') && pat.some(x=>b.startsWith(x))) ents.push(e); });
+  if(!ents.length) throw new Error('No Fitbit data files found. In Google Takeout make sure you selected “Fitbit”, and upload that .zip.');
+  $('spin').textContent='Reading '+ents.length+' Fitbit files…';
+  const files=await Promise.all(ents.map(async e=>({name:e.name.split('/').pop().toLowerCase(), text:await e.async('string')})));
+  const g=fitbitToGarmin(files);
+  if(!g.length) throw new Error('Couldn’t read recognizable Fitbit metrics from this export.');
+  return GarminCompute.parseExport(g);
+}
+function fitbitToGarmin(files){
+  const steps={}, rhr={}, sleepAgg={}, im={}; const acts=[];
+  const pd=dt=>{ if(!dt) return null; if(/^\d{4}-\d{2}-\d{2}/.test(dt)) return dt.slice(0,10); const m=/^(\d{2})\/(\d{2})\/(\d{2})/.exec(dt); if(m) return '20'+m[3]+'-'+m[1]+'-'+m[2]; const d=new Date(dt); return isNaN(d)?null:d.toISOString().slice(0,10); };
+  const amap={run:'running',running:'running',walk:'walking',walking:'walking',bike:'indoor_cycling',cycling:'indoor_cycling',spinning:'indoor_cycling',swim:'lap_swimming',swimming:'lap_swimming',hike:'hiking',hiking:'hiking'};
+  files.forEach(f=>{ let j; try{ j=JSON.parse(f.text); }catch(_){ return; } const n=f.name; if(!Array.isArray(j)) return;
+    if(n.startsWith('steps-')){ j.forEach(r=>{ const d=pd(r.dateTime); if(d) steps[d]=(steps[d]||0)+(+r.value||0); }); }
+    else if(n.startsWith('resting_heart_rate-')){ j.forEach(r=>{ const d=pd(r.dateTime); const v=(r.value&&typeof r.value==='object')?+r.value.value:+r.value; if(d&&v>0) rhr[d]=v; }); }
+    else if(n.startsWith('very_active_minutes-')){ j.forEach(r=>{ const d=pd(r.dateTime); if(d){ im[d]=im[d]||{mod:0,vig:0}; im[d].vig+=(+r.value||0); } }); }
+    else if(n.startsWith('moderately_active_minutes-')){ j.forEach(r=>{ const d=pd(r.dateTime); if(d){ im[d]=im[d]||{mod:0,vig:0}; im[d].mod+=(+r.value||0); } }); }
+    else if(n.startsWith('sleep-')){ j.forEach(s=>{ const d=pd(s.dateOfSleep||s.dateTime); if(!d) return; const lv=s.levels&&s.levels.summary; let deep=0,light=0,rem=0,wake=0;
+        if(lv){ deep=(lv.deep&&lv.deep.minutes)||0; light=(lv.light&&lv.light.minutes)||0; rem=(lv.rem&&lv.rem.minutes)||0; wake=(lv.wake&&lv.wake.minutes)||0; if(!(deep+light+rem)&&(lv.asleep||lv.restless)) light=(lv.asleep&&lv.asleep.minutes)||s.minutesAsleep||0; }
+        else { light=s.minutesAsleep||0; }
+        const c=sleepAgg[d]=sleepAgg[d]||{deep:0,light:0,rem:0,awake:0}; c.deep+=deep*60; c.light+=light*60; c.rem+=rem*60; c.awake+=wake*60; }); }
+    else if(n.startsWith('exercise-')){ j.forEach(e=>{ const start=e.startTime||e.originalStartTime; const dt=new Date(start); if(isNaN(dt)) return;
+        const nm=(e.activityName||'other').toString().toLowerCase(); const km=(+e.distance||0)*((e.distanceUnit==='Mile'||e.distanceUnit==='mi')?1.60934:1);
+        acts.push({activityType:amap[nm]||nm.replace(/\s+/g,'_'), beginTimestamp:dt.getTime(), distance:Math.round(km*1000*100), duration:Math.round(+e.duration||+e.activeDuration||0), avgHr:+e.averageHeartRate||null}); }); }
+  });
+  const dates=new Set([...Object.keys(steps),...Object.keys(rhr),...Object.keys(sleepAgg),...Object.keys(im)]);
+  const uds=[...dates].sort().map(d=>({calendarDate:d, totalSteps:steps[d]!=null?Math.round(steps[d]):null, restingHeartRate:rhr[d]||null, moderateIntensityMinutes:(im[d]&&im[d].mod)||0, vigorousIntensityMinutes:(im[d]&&im[d].vig)||0, includesWellnessData:true}));
+  const sleepArr=Object.entries(sleepAgg).map(([d,s])=>({calendarDate:d, deepSleepSeconds:s.deep, lightSleepSeconds:s.light, remSleepSeconds:s.rem, awakeSleepSeconds:s.awake}));
+  const out=[];
+  if(uds.length) out.push({name:'Fitbit/UDSFile_fitbit.json', text:JSON.stringify(uds)});
+  if(sleepArr.length) out.push({name:'Fitbit/fitbit_sleepData.json', text:JSON.stringify(sleepArr)});
+  if(acts.length) out.push({name:'Fitbit/fitbit_summarizedActivities.json', text:JSON.stringify([{summarizedActivitiesExport:acts}])});
+  return out;
+}
+
+async function handleCoros(f){
+  const low=f.name.toLowerCase(); let texts=[];
+  if(low.endsWith('.tcx')){ texts=[await f.text()]; }
+  else if(low.endsWith('.zip')){
+    let zip; try{ zip=await JSZip.loadAsync(f); }catch(_){ throw new Error('Couldn’t open that .zip — it may still be downloading or be corrupted.'); }
+    const ents=[]; let hasFit=false; zip.forEach((p,e)=>{ if(e.dir) return; const l=p.toLowerCase(); if(l.endsWith('.tcx')) ents.push(e); else if(l.endsWith('.fit')) hasFit=true; });
+    if(!ents.length) throw new Error(hasFit?'This COROS export contains .FIT files, which aren’t supported yet — re-export from COROS Training Hub choosing the TCX format.':'No .tcx activity files found in this zip.');
+    $('spin').textContent='Reading '+ents.length+' COROS activities…';
+    texts=await Promise.all(ents.map(e=>e.async('string')));
+  } else throw new Error('Upload your COROS export .zip (TCX) or a single .tcx file.');
+  const g=corosToGarmin(texts);
+  if(!g.length) throw new Error('Couldn’t read activities from these TCX files.');
+  return GarminCompute.parseExport(g);
+}
+function corosToGarmin(texts){
+  const acts=[]; const attrOf=(s,a)=>{ const r=new RegExp(a+'="([^"]*)"').exec(s); return r?r[1]:null; };
+  const tag=(s,t)=>{ const r=new RegExp('<'+t+'[^>]*>([^<]*)</'+t+'>').exec(s); return r?r[1]:null; };
+  const map={running:'running',biking:'indoor_cycling',cycling:'indoor_cycling',swimming:'lap_swimming',walking:'walking',hiking:'hiking'};
+  texts.forEach(xml=>{ const actRe=/<Activity\b([\s\S]*?)<\/Activity>/g; let m;
+    while((m=actRe.exec(xml))){ const blk=m[0]; const sport=(attrOf(m[1],'Sport')||'other').toLowerCase(); const id=tag(blk,'Id'); const start=id?new Date(id).getTime():null; if(!start||isNaN(start)) continue;
+      let secs=0, dist=0, hrs=[]; const lapRe=/<Lap\b[\s\S]*?<\/Lap>/g; let lm;
+      while((lm=lapRe.exec(blk))){ const lap=lm[0]; secs+=+(tag(lap,'TotalTimeSeconds')||0); dist+=+(tag(lap,'DistanceMeters')||0); const hv=/<AverageHeartRateBpm[^>]*>\s*<Value>([\d.]+)<\/Value>/.exec(lap); if(hv) hrs.push(+hv[1]); }
+      acts.push({activityType:map[sport]||sport, beginTimestamp:start, distance:Math.round(dist*100), duration:Math.round(secs*1000), avgHr:hrs.length?Math.round(hrs.reduce((a,b)=>a+b,0)/hrs.length):null}); }
+  });
+  if(!acts.length) return [];
+  const days=[...new Set(acts.map(a=>new Date(a.beginTimestamp).toISOString().slice(0,10)))].sort();
+  const uds=days.map(d=>({calendarDate:d, totalSteps:null, restingHeartRate:null, moderateIntensityMinutes:0, vigorousIntensityMinutes:0, includesWellnessData:true}));
+  return [{name:'COROS/UDSFile_coros.json', text:JSON.stringify(uds)},
+          {name:'COROS/coros_summarizedActivities.json', text:JSON.stringify([{summarizedActivitiesExport:acts}])}];
 }
 
 function mk(id,cfg){ const el=$(id); if(!el) return; const c=new Chart(el,cfg); charts.push(c); return c; }
